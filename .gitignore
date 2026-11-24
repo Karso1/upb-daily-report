@@ -1,0 +1,17 @@
+/data/
+/legacy-data/
+/node_modules/
+/.venv/
+/.env*
+/.upb-*/
+*.xlsx
+*.xlsm
+*.xls
+*.xlsb
+*.csv
+*.tsv
+*.lock
+*.inspect.ndjson
+__pycache__/
+*.pyc
+.DS_Store
