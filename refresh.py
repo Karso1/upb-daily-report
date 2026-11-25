@@ -2,30 +2,26 @@ import argparse
 from calendar import monthrange
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-import fcntl
-import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import warnings
 
 from openpyxl import load_workbook
+from xlsxwriter.exceptions import FileCreateError
+
+from report_workbook import CHANNELS, FX, RECHARGE_CHANNELS, write_report
 
 
 HERE = Path(__file__).resolve().parent
 SOURCE = Path(os.environ.get("UPB_SOURCE_DIR", HERE / "data")).expanduser()
-NODE_RUNTIME = Path(os.environ.get("UPB_NODE_RUNTIME", Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node")).expanduser()
-NODE = NODE_RUNTIME / "bin/node"
 REPORT = HERE / "UPB每日数据汇总.xlsx"
-CHANNELS = ("Reap", "Passto", "StraitsX")
-RECHARGE_CHANNELS = (*CHANNELS, "其他渠道")
 CARD_TYPES = ("虚拟卡", "实体卡")
-FX = Decimal("7.78")
 DATASETS = {
     "cards": ("开卡", "开卡"),
     "recharge": ("充值数据", "充值"),
@@ -376,6 +372,27 @@ def report_row(day, selected, amounts, issues, previous):
     }
 
 
+@contextmanager
+def report_lock(path):
+    with path.open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0)
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as error:
+                raise OSError("无法锁定汇总 Excel，可能另有更新正在运行") from error
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise OSError("汇总 Excel 正在由另一个进程更新") from error
+        yield
+
+
 def main():
     parser = argparse.ArgumentParser(description="更新本地 UPB 横向日报")
     mode = parser.add_mutually_exclusive_group()
@@ -390,7 +407,6 @@ def main():
     parser.add_argument("--archive-year", type=int, default=datetime.now(timezone.utc).year,
                         help="消费月档文件名未注明年份时使用的年份")
     parser.add_argument("--output", type=Path, default=REPORT)
-    parser.add_argument("--preview", type=Path)
     for key in SUPPLEMENTAL:
         parser.add_argument(f"--{key.lower()}-export", type=Path, dest=key)
     args = parser.parse_args()
@@ -414,8 +430,7 @@ def main():
 
     args.output = args.output.resolve()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.with_name(f".{args.output.name}.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with report_lock(args.output.with_name(f".{args.output.name}.lock")):
         update(args, overrides)
 
 
@@ -471,31 +486,21 @@ def update(args, overrides):
             records[day] = record
             changed.append(day)
 
-    if not records or (not changed and not args.preview):
+    if not changed:
         print("当前汇总数据一致。" if records else "此范围内没有 UPB 源表。")
         return
     with TemporaryDirectory(prefix=".upb-", dir=args.output.parent) as temp:
-        input_json = Path(temp) / "daily.json"
-        input_json.write_text(json.dumps([records[key] for key in sorted(records)], ensure_ascii=False), encoding="utf-8")
         candidate = Path(temp) / args.output.name
-        render = [str(NODE), str(HERE / "build.mjs"), str(input_json), str(candidate)]
-        if args.preview:
-            render.append(str(args.preview.resolve()))
-        if not NODE.is_file():
-            raise ValueError("找不到 Node.js，请设置 UPB_NODE_RUNTIME 指向包含 bin/node 的运行时目录")
-        subprocess.run(render, check=True, env={**os.environ, "UPB_NODE_RUNTIME": str(NODE_RUNTIME.resolve())})
+        write_report(candidate, [records[key] for key in sorted(records)])
         current_edit = args.output.stat().st_mtime_ns if args.output.exists() else None
         if last_edit != current_edit or args.output.with_name(f"~${args.output.name}").exists():
             raise ValueError("汇总 Excel 在更新期间被打开或修改，请保存并关闭后重试")
         candidate.replace(args.output)
-    if changed:
-        print(f"已更新 {len(changed)} 天（{changed[0]} 至 {changed[-1]}）。")
-    else:
-        print("已生成预览。")
+    print(f"已更新 {len(changed)} 天（{changed[0]} 至 {changed[-1]}）。")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, ArithmeticError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, ArithmeticError, FileCreateError) as error:
         sys.exit(f"更新失败。{error}")

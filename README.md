@@ -26,33 +26,38 @@ UPB 日报把已经下载到本地的 CRM Excel 汇总成一个工作簿，每�
 
 ### 使用方法
 
-需要 Python 3.10+、`requirements.txt` 中的 openpyxl，以及能加载 `@oai/artifact-tool` 的 Node.js 运行时。Excel 输出依赖该库，当前实测环境是 Codex 随附的运行时。其他环境需已有对该库的访问权限。设置 `UPB_NODE_RUNTIME` 可指定包含 `bin/node` 和该库 `node_modules` 的目录。
+需要 **Python 3.10+**。下载或克隆仓库，在项目目录中安装 `requirements.txt`。openpyxl 负责读取 Excel，XlsxWriter 负责生成 Excel。运行所需的依赖都可从 PyPI 安装。
 
 ```sh
-python3 -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
 
+上面的安装命令适用于 macOS 和 Linux。Windows 可运行 `py -3 -m venv .venv`，再用 `.venv\Scripts\python.exe -m pip install -r requirements.txt`。以下命令中的 `.venv/bin/python` 在 Windows 换成 `.venv\Scripts\python.exe`。
+
+```sh
 # 日常更新
-python3 refresh.py --source "/path/to/upb-exports"
+.venv/bin/python refresh.py --source "/path/to/upb-exports"
 
 # 重算所有可识别的历史日期
-python3 refresh.py --history --source "/path/to/upb-exports" --legacy-source "/path/to/legacy-exports"
+.venv/bin/python refresh.py --history --source "/path/to/upb-exports" --legacy-source "/path/to/legacy-exports"
 
 # 重算一个区间，含起止日期
-python3 refresh.py --history --from 2026-05-01 --to 2026-05-31 --source "/path/to/upb-exports"
+.venv/bin/python refresh.py --history --from 2026-05-01 --to 2026-05-31 --source "/path/to/upb-exports"
 
 # 重算单日，指定该日按完成时间导出的开卡明细
-python3 refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
+.venv/bin/python refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
 ```
 
 默认输出为项目目录下的 `UPB每日数据汇总.xlsx`，可通过 `--output` 覆盖。交易补充文件分别通过 `--reap-export`、`--passto-export` 和 `--straitsx-export` 指定，须与 `--date` 一起使用。补充文件路径会写进来源页，文件仍在时，重算同一天会复用它。
 
-macOS 双击入口是 `双击更新UPB日报.command` 和 `双击重算UPB历史.command`。如果下载后脚本缺少执行权限，运行 `chmod +x *.command`。双击依赖 Finder 启动时能找到配置好的 Python 和默认数据目录，其他安装方式可用上面的终端命令。更新前先保存并关闭 Excel。
+macOS 安装好依赖后，把导出目录放在项目的 `data/`，也可以在项目目录建立指向现有导出目录的链接 `ln -s "/path/to/upb-exports" data`。首次使用时运行 `chmod +x *.command`，然后在 Finder 双击 `双击更新UPB日报.command` 或 `双击重算UPB历史.command`。入口会优先使用项目的 `.venv/bin/python`，执行成功后打开汇总表。指定其他输入或输出时可用上面的终端命令。更新前先保存并关闭 Excel。
 
 ### 实现步骤和技术
 
 1. **确定日期。** 日常模式默认重算最近两个已知 UTC 日期，并追加汇总末尾之后已下载的日期。首次运行默认取有源文件的最近两个日期。中间漏掉的旧日期用历史模式或 `--date` 补。历史模式重新读取所选日期的归档和日档，默认截至 UTC 昨天。
 2. **读取源表。** `refresh.py` 使用 openpyxl 的只读模式，查找表头符合要求的工作表。Python 按文件并行读取，解析金额时使用 `Decimal`。读完检查源文件大小和修改时间，遇到来源缺失或数据问题时记录待核对信息。
-3. **按日期汇总。** Python 按渠道、客群归集并去重，把各日期的汇总、来源和手填值作为临时 JSON 交给 `build.mjs`。JavaScript 通过 Artifact Tool 生成「UPB每日汇总」和「数据来源」，并写入合计、分组占比等 Excel 公式。
+3. **汇总并生成 Excel。** Python 按渠道和客群归集并去重，把各日期的汇总、来源和手填值交给 `report_workbook.py`。XlsxWriter 生成「UPB每日汇总」和「数据来源」，写入合计和占比公式，同时保存初始计算结果，方便 Excel 和读取缓存值的工具直接查看。
 4. **保存。** 更新时从现有日报按日期读回「平台注册人数」「用户资金」「理财金额」，包括手填的 0。已存在的日期原位更新。程序对同一个输出加锁，在临时目录生成新工作簿，再检查旧文件是否被打开或修改，最后替换输出。源 Excel 全程只读。
 
 ### 指标怎么算
@@ -91,25 +96,31 @@ For each dataset and date, the priority is an explicitly supplied original repor
 
 ### Running the report
 
-Use Python 3.10+ and install openpyxl from `requirements.txt`. Excel generation also needs a Node.js runtime with access to `@oai/artifact-tool`. The tested setup uses the runtime bundled with Codex. For another setup that already has the library, set `UPB_NODE_RUNTIME` to the directory containing `bin/node` and the library's `node_modules`.
+Use **Python 3.10+**. Download or clone the repository, then install `requirements.txt` from the project directory. openpyxl reads the source workbooks and XlsxWriter generates the report. All runtime dependencies are available from PyPI.
 
 ```sh
-python3 -m pip install -r requirements.txt
-python3 refresh.py --source "/path/to/upb-exports"
-python3 refresh.py --history --source "/path/to/upb-exports" --legacy-source "/path/to/legacy-exports"
-python3 refresh.py --history --from 2026-05-01 --to 2026-05-31 --source "/path/to/upb-exports"
-python3 refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+These setup commands are for macOS and Linux. On Windows, use `py -3 -m venv .venv` and `.venv\Scripts\python.exe -m pip install -r requirements.txt`. Replace `.venv/bin/python` in the examples with `.venv\Scripts\python.exe` on Windows.
+
+```sh
+.venv/bin/python refresh.py --source "/path/to/upb-exports"
+.venv/bin/python refresh.py --history --source "/path/to/upb-exports" --legacy-source "/path/to/legacy-exports"
+.venv/bin/python refresh.py --history --from 2026-05-01 --to 2026-05-31 --source "/path/to/upb-exports"
+.venv/bin/python refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
 ```
 
 Use `--output` to change the default `UPB每日数据汇总.xlsx` in the project directory. A single-date run also supports `--reap-export`, `--passto-export`, and `--straitsx-export`. The workbook records supplemental file paths and reuses those files for the same date while they are available.
 
-The two `.command` launchers provide daily update and historical recalculation on macOS. Run `chmod +x *.command` if the downloaded launchers lack execute permissions. Double-clicking uses the default data directory and the Python visible to Finder. For a custom setup, use the terminal commands. Save and close the workbook before refreshing it.
+On macOS, put the exports in the project's `data/` directory or link it to your existing export folder with `ln -s "/path/to/upb-exports" data`. Run `chmod +x *.command` during setup, then double-click `双击更新UPB日报.command` (daily update) or `双击重算UPB历史.command` (historical recalculation) in Finder. The launchers prefer the project's `.venv/bin/python` and open the workbook on success. Use the terminal for custom input or output paths. Save and close the workbook before refreshing it.
 
 ### Implementation
 
 1. **Select dates.** The daily run recomputes the two latest known UTC dates and appends available dates newer than the last workbook column. A first run starts with the two most recent available export dates. Use history mode or `--date` for older gaps. History mode rereads sources for the selected dates and defaults to ending yesterday in UTC.
 2. **Read exports.** `refresh.py` uses openpyxl in read-only mode to find sheets with matching headers. Python reads separate files in parallel, parses amounts as `Decimal`, and checks file size and modification time after the read. Missing or invalid data is recorded for review.
-3. **Aggregate and build Excel.** Python deduplicates and aggregates records by date, channel and segment. It passes daily summaries, provenance and manual inputs as transient JSON to `build.mjs`. The JavaScript builder uses Artifact Tool to produce the report and source sheets and adds Excel formulas for totals and shares.
+3. **Aggregate and build Excel.** Python deduplicates and aggregates records by date, channel and segment. It passes daily summaries, provenance and manual inputs to `report_workbook.py`. XlsxWriter creates the report and source sheets, writes Excel formulas for totals and shares, and stores their initial cached results.
 4. **Save the result.** The existing workbook supplies manually entered registrations, user funds and investment balances, including explicit zero values. These follow their dates during a backfill. The tool locks the report, renders a candidate file in a temporary directory, checks that the original workbook has not been opened or changed, and replaces the workbook. Source files are read-only throughout.
 
 ### Calculation rules

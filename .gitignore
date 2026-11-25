@@ -1,6 +1,5 @@
 /data/
 /legacy-data/
-/node_modules/
 /.venv/
 /.env*
 /.upb-*/
@@ -11,7 +10,6 @@
 *.csv
 *.tsv
 *.lock
-*.inspect.ndjson
 __pycache__/
 *.pyc
 .DS_Store
