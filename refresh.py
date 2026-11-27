@@ -15,7 +15,10 @@ import warnings
 from openpyxl import load_workbook
 from xlsxwriter.exceptions import FileCreateError
 
-from report_workbook import CHANNELS, FX, RECHARGE_CHANNELS, write_report
+from report_workbook import (
+    BASE_CHANNELS, CHANNELS, FX, LABELS, PHOTON, RECHARGE_2C, RECHARGE_2B, RECHARGE_CHANNELS,
+    SOURCE_HEADERS, TX_START, TX_2C, write_report,
+)
 
 
 HERE = Path(__file__).resolve().parent
@@ -28,6 +31,7 @@ DATASETS = {
     **{channel: ("消费数据", channel) for channel in CHANNELS},
 }
 SUPPLEMENTAL = ("cards", *CHANNELS)
+PHOTON_ALIASES = (PHOTON.casefold(), "光子易")
 
 
 def read_rows(path, fields):
@@ -79,6 +83,8 @@ def recharge(path, days, monthly):
             continue
         if currency != "USDT" or not channel or not order:
             raise ValueError(f"{path.name} 有成功充值的币种、渠道或订单号待核对")
+        if channel.casefold() in PHOTON_ALIASES:
+            channel = PHOTON
         if channel not in CHANNELS:
             channel = "其他渠道"
         item = (channel, is_consumer(agent), Decimal(value))
@@ -119,11 +125,12 @@ def transactions(path, channel, days, mode):
         "Passto": ("历史所属代理商", "历史代理商名称", "所属代理商"),
         "Reap": ("历史代理商名称", "历史所属代理商", "所属代理商"),
         "StraitsX": ("历史代理商名称", "历史所属代理商", "所属代理商"),
+        PHOTON: ("历史所属代理商", "历史代理商名称", "所属代理商"),
     }
     amount_fields = ("交易原始金额", "交易金额") if channel == "StraitsX" else "交易金额"
     currency_fields = ("交易原始币种", "交易币种") if channel == "StraitsX" else ("交易币种", "交易币种名称")
     fields = (
-        ("ID", "父ID(列表中ID列取该字段)"), ("订单类型", "订单类型名"),
+        ("ID", "主ID", "父ID(列表中ID列取该字段)"), ("订单类型", "订单类型名"),
         ("收支类型", "收支类型名", "收支类型文本"), currency_fields, amount_fields, agent[channel],
         "交易时间", ("更新时间", "更新时间(交易)", "平台入账时间"),
     )
@@ -136,7 +143,7 @@ def transactions(path, channel, days, mode):
         if day not in days:
             continue
         covered.add(day)
-        if flow != "支出" or (mode != "original" and kind != "主订单"):
+        if flow != "支出" or ((mode != "original" or channel == PHOTON) and kind != "主订单"):
             continue
         amount = Decimal(value)
         if channel == "Passto" and mode == "original" and row_currency != "HKD":
@@ -190,32 +197,51 @@ def load_report(path):
     book = load_workbook(path, read_only=True, data_only=True)
     try:
         sheet = book["UPB每日汇总"]
+        sources = book["数据来源"]
+        photon_layout = sources["G2"].value == PHOTON
         old_layout = sheet["A34"].value == "交易汇总"
-        current_layout = sheet["A11"].value == "其他渠道开卡"
-        last_row = 53 if current_layout else 35 if old_layout else 48
+        prior_layout = sheet["A11"].value == "其他渠道开卡"
+        last_row = len(LABELS) if photon_layout else 53 if prior_layout else 35 if old_layout else 48
         columns = list(zip(*sheet.iter_rows(min_row=2, max_row=last_row, values_only=True)))
         if not columns or columns[0][1] != "平台注册人数":
             raise ValueError("现有 Excel 的平台注册人数行已移动")
-        sources = book["数据来源"]
         records = {}
-        source_rows = sources.iter_rows(min_row=3, max_row=len(columns) + 1, max_col=8, values_only=True)
+        source_columns = len(SOURCE_HEADERS) if photon_layout else 8
+        source_rows = sources.iter_rows(min_row=3, max_row=len(columns) + 1, max_col=source_columns, values_only=True)
         for column, source_row in zip(columns[1:], source_rows, strict=True):
-            day, *paths, flags, issues = source_row
+            if photon_layout:
+                day, *paths, flags, issues, photon_required = source_row
+            else:
+                day, *paths, flags, issues = source_row
+                paths.append(None)
+                photon_required = False
             if not isinstance(column[0], datetime) or column[0].date().isoformat() != day or day in records:
                 raise ValueError("现有 Excel 的日期与来源记录不一致")
             registration = column[1]
-            card_values = list(column[5:10] if current_layout else column[5:9])
-            recharge_values = list(column[16:24] if current_layout else column[14:20])
-            tx_start = 34 if current_layout else 29
-            if not current_layout:
+            card_values = list(column[5:10] if prior_layout else column[5:9])
+            if not prior_layout:
                 card_values.append(0 if all(value is not None for value in card_values) else None)
-                missing_value = 0 if all(value is not None for value in recharge_values) else None
-                recharge_values.insert(3, missing_value)
-                recharge_values.append(missing_value)
+            if photon_layout:
+                size = len(RECHARGE_CHANNELS)
+                recharge_values = list(column[RECHARGE_2C - 2:RECHARGE_2B - 2 + size])
+                transactions = [[column[TX_START - 2 + i], column[TX_2C - 2 + i]] for i in range(len(CHANNELS))]
+            else:
+                start, width = (16, 4) if prior_layout else (14, 3)
+                recharge_values = []
+                for group in range(2):
+                    part = list(column[start + group * width:start + (group + 1) * width])
+                    missing_value = 0 if all(value is not None for value in part) else None
+                    if not prior_layout:
+                        part.append(missing_value)
+                    part.insert(len(BASE_CHANNELS), missing_value)
+                    recharge_values.extend(part)
+                tx_start = 34 if prior_layout else 29
+                transactions = [[column[i], None if old_layout else column[i + 3]] for i in range(tx_start, tx_start + len(BASE_CHANNELS))]
+                transactions.append([None, None])
             records[day] = {
                 "day": day, "registration": registration, "card_status": column[2], "tx_status": column[3],
                 "cards": card_values, "recharge": recharge_values,
-                "transactions": [[column[i], None if old_layout else column[i + 3]] for i in range(tx_start, tx_start + 3)],
+                "transactions": transactions, "photon_required": bool(photon_required),
                 "user_funds": None if old_layout else column[-2],
                 "wealth": None if old_layout else column[-1],
                 "paths": dict(zip(DATASETS, paths)), "supplemental": flags.split(",") if flags else [],
@@ -250,6 +276,8 @@ def archive_months(root, archive_year):
         month = int(month_match[1])
         for path in directory.glob("*.xlsx"):
             key = next((channel for channel in CHANNELS if path.name.lower().startswith(channel.lower())), None)
+            if not key and path.name.startswith("光子易"):
+                key = PHOTON
             if not key and path.name.casefold().startswith("straitx"):
                 key = "StraitsX"
             if not key:
@@ -267,6 +295,20 @@ def daily_files(root):
             iso = path.stem.removeprefix(prefix + "_")
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", iso) and path.parent.name == iso[:7]:
                 result[key, iso] = path
+    photon_files = {}
+    consumption = root / "消费数据"
+    for directory in (consumption / "历史补充", consumption / "每日自动下载"):
+        for path in directory.rglob("*.xlsx"):
+            prefix, sep, day = path.stem.rpartition("_")
+            if not sep or prefix.casefold() not in PHOTON_ALIASES or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                continue
+            if directory.name == "每日自动下载" and path.parent.name != day[:7]:
+                continue
+            prior = photon_files.get(day)
+            if prior is None or (path.stat().st_mtime_ns, str(path)) > (prior.stat().st_mtime_ns, str(prior)):
+                photon_files[day] = path
+        result.update({(PHOTON, day): path for day, path in photon_files.items()})
+        photon_files.clear()
     return result
 
 
@@ -341,7 +383,7 @@ def collect(selected):
     return amounts, issues
 
 
-def report_row(day, selected, amounts, issues, previous):
+def report_row(day, selected, amounts, issues, previous, photon_start):
     mode = {key: source[1] for key, source in selected.items()}
     paths = {key: str(selected[key][0]) if key in selected else None for key in DATASETS}
     card_status = {
@@ -350,23 +392,28 @@ def report_row(day, selected, amounts, issues, previous):
     }.get(mode.get("cards"), "缺少开卡源表")
     if "cards" in issues:
         card_status = "开卡源表待核对"
-    if any(key not in mode for key in CHANNELS):
+    photon_required = PHOTON in mode or (photon_start is not None and day >= photon_start) or previous.get("photon_required", False)
+    required_channels = CHANNELS if photon_required else BASE_CHANNELS
+    if any(key not in mode for key in BASE_CHANNELS):
         tx_status = "缺少交易源表"
-    elif any(key in issues for key in CHANNELS):
+    elif photon_required and PHOTON not in mode:
+        tx_status = "缺少 PhotonPay 源表"
+    elif any(key in issues for key in required_channels):
         tx_status = "交易源表待核对"
-    elif all(mode[key] == "original" for key in CHANNELS):
+    elif all(mode[key] == "original" for key in required_channels):
         tx_status = "原日报导出"
-    elif all(mode[key] == "monthly" for key in CHANNELS):
+    elif all(mode[key] == "monthly" for key in required_channels):
         tx_status = "待核对 · 月度归档"
-    elif "legacy" in (mode[key] for key in CHANNELS):
+    elif "legacy" in (mode[key] for key in required_channels):
         tx_status = "待核对 · 旧版日档"
     else:
         tx_status = "待核对 · 自动导出"
     return {
         "day": day, "registration": previous.get("registration"), "user_funds": previous.get("user_funds"),
         "wealth": previous.get("wealth"), "card_status": card_status, "tx_status": tx_status,
-        "cards": amounts.get("cards", [None] * 5), "recharge": amounts.get("recharge", [None] * 8),
+        "cards": amounts.get("cards", [None] * 5), "recharge": amounts.get("recharge", [None] * (2 * len(RECHARGE_CHANNELS))),
         "transactions": [amounts.get(key, [None, None]) for key in CHANNELS],
+        "photon_required": photon_required,
         "paths": paths, "supplemental": [key for key in DATASETS if mode.get(key) == "original"],
         "issues": "；".join(issues.values()),
     }
@@ -442,6 +489,10 @@ def update(args, overrides):
     root = args.source.resolve()
     daily = daily_files(root)
     archive = archive_months(root, args.archive_year) if args.history or args.date else {}
+    photon_days = [day for (key, day) in daily if key == PHOTON]
+    photon_days.extend(month + "-01" for (key, month) in archive if key == PHOTON)
+    photon_days.extend(day for day, row in records.items() if row["photon_required"])
+    photon_start = min(photon_days, default=None)
     legacy = legacy_files(args.legacy_source.expanduser().resolve()) if args.legacy_source and (args.history or args.date) else {}
     completed = datetime.now(timezone.utc).date() - timedelta(days=1)
     daily_dates = {day for _, day in daily if day <= completed.isoformat()}
@@ -479,7 +530,7 @@ def update(args, overrides):
                 issues[day].setdefault(key, message)
     changed = []
     for day in requested:
-        record = report_row(day, selected[day], amounts[day], issues[day], records.get(day, {}))
+        record = report_row(day, selected[day], amounts[day], issues[day], records.get(day, {}), photon_start)
         if args.registration is not None:
             record["registration"] = args.registration
         if records.get(day) != record:

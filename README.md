@@ -17,8 +17,9 @@ UPB 日报把已经下载到本地的 CRM Excel 汇总成一个工作簿，每�
 | Reap 交易 | Reap 渠道明细账务 | `消费数据/每日自动下载/YYYY-MM/Reap_YYYY-MM-DD.xlsx` |
 | Passto 交易 | Passto 渠道明细账务 | `消费数据/每日自动下载/YYYY-MM/Passto_YYYY-MM-DD.xlsx` |
 | StraitsX 交易 | StraitsX 渠道账务明细 | `消费数据/每日自动下载/YYYY-MM/StraitsX_YYYY-MM-DD.xlsx` |
+| PhotonPay 交易 | 光子易渠道明细账务 | `消费数据/每日自动下载/YYYY-MM/光子易_YYYY-MM-DD.xlsx` 或同目录下的 `PhotonPay_YYYY-MM-DD.xlsx` |
 
-开卡的 CRM 日档按申请时间导出，充值日档按订单创建时间导出。Passto 和 Reap 的 CRM 交易日档按更新时间导出，StraitsX 日档按交易时间导出。交易日档按整个文件归到文件名对应的日期，因此更新时间口径的日档可能含有更早发生的交易。
+开卡的 CRM 日档按申请时间导出，充值日档按订单创建时间导出。Passto、Reap 和 PhotonPay 的 CRM 交易日档按更新时间导出，StraitsX 日档按交易时间导出。交易日档按整个文件归到文件名对应的日期，因此更新时间口径的日档可能含有更早发生的交易。PhotonPay 自动日档缺失时，还会在 `消费数据/历史补充/` 下查找同日的 `光子易_YYYY-MM-DD.xlsx` 或 `PhotonPay_YYYY-MM-DD.xlsx`。
 
 历史模式还识别开卡目录下带年月的归档、`充值数据/Q*/` 下带年月的充值月档，以及 `消费数据/UPB/Q*/<月份>/` 下以渠道名开头的交易月档。交易月档文件名无年份时，使用 `--archive-year` 指定的年份，默认当年 UTC 年份。一个渠道同月有多份候选月档时，选择最后修改的文件。
 
@@ -49,7 +50,7 @@ python3 -m venv .venv
 .venv/bin/python refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
 ```
 
-默认输出为项目目录下的 `UPB每日数据汇总.xlsx`，可通过 `--output` 覆盖。交易补充文件分别通过 `--reap-export`、`--passto-export` 和 `--straitsx-export` 指定，须与 `--date` 一起使用。补充文件路径会写进来源页，文件仍在时，重算同一天会复用它。
+默认输出为项目目录下的 `UPB每日数据汇总.xlsx`，可通过 `--output` 指定。交易补充文件分别通过 `--reap-export`、`--passto-export`、`--straitsx-export` 和 `--photonpay-export` 指定，须与 `--date` 一起使用。补充文件路径会写进来源页，文件仍在时，重算同一天会复用它。
 
 macOS 安装好依赖后，把导出目录放在项目的 `data/`，也可以在项目目录建立指向现有导出目录的链接 `ln -s "/path/to/upb-exports" data`。首次使用时运行 `chmod +x *.command`，然后在 Finder 双击 `双击更新UPB日报.command` 或 `双击重算UPB历史.command`。入口会优先使用项目的 `.venv/bin/python`，执行成功后打开汇总表。指定其他输入或输出时可用上面的终端命令。更新前先保存并关闭 Excel。
 
@@ -70,6 +71,12 @@ macOS 安装好依赖后，把导出目录放在项目的 `data/`，也可以在
 | 2B／2C | 代理商字段去掉前后空白并忽略大小写后，等于 `UPay` 的归 2C，其余归 2B。充值读取所属代理商，交易优先读取渠道的历史代理商字段。交易的 2B 金额为渠道合计减渠道 2C。 |
 | 合计和占比 | 金额按分组小计四舍五入至两位小数。占比为分组或渠道金额除以同日对应总额。分母为零或有必要输入缺失时，留空。 |
 
+#### PhotonPay 的 2B／2C
+
+- **充值（USDT）**。充值表的「卡片渠道」为 `photonpay`（忽略大小写）或「光子易」时，统一归入 PhotonPay。只计「充值/抵押成功」且实付币种为 USDT 的订单，按订单号和日期去重。根据「所属代理商」拆分后，分别累加 2B、2C 的「实付金额」。旧表缺该列时使用「历史代理商」。
+- **消费（USD）**。光子易或 PhotonPay 交易表只计「主订单」中的「支出」，读取 USD「交易金额」，按日期和交易 ID 去重，支持导出列「主ID」。优先用「历史所属代理商」区分客群，缺该列时依次使用「历史代理商名称」和「所属代理商」。PhotonPay 2C 为 UPay 记录的金额合计，PhotonPay 2B 为渠道合计减去 2C。
+- **合计与缺档**。PhotonPay 充值和消费均计入日报对应合计。首次有 PhotonPay 源表的日期之前，消费合计沿用原三渠道。从该日期开始，缺少 PhotonPay 源表会标记待核对，消费合计和占比留空。已有源表但无符合条件的支出时，PhotonPay 消费计为零。
+
 汇总页标黄的来源状态表示导出范围待核对。缺档、币种异常或无法消解的重复记录会留下待核对说明，受影响的数字留空。工作簿、原始明细和本地配置属于使用环境中的数据，保存在本地。
 
 ## English
@@ -87,8 +94,9 @@ Pass the UPB export root as `--source` or set `UPB_SOURCE_DIR`. The public check
 | Reap transactions | Reap channel ledger | `消费数据/每日自动下载/YYYY-MM/Reap_YYYY-MM-DD.xlsx` |
 | Passto transactions | Passto channel ledger | `消费数据/每日自动下载/YYYY-MM/Passto_YYYY-MM-DD.xlsx` |
 | StraitsX transactions | StraitsX channel ledger | `消费数据/每日自动下载/YYYY-MM/StraitsX_YYYY-MM-DD.xlsx` |
+| PhotonPay transactions | 光子易 channel ledger | `消费数据/每日自动下载/YYYY-MM/光子易_YYYY-MM-DD.xlsx` or `PhotonPay_YYYY-MM-DD.xlsx` in the same folder |
 
-The upstream CRM card export is filtered by application time, and the top-up export by creation time. The Passto and Reap daily exports use update time, while StraitsX uses transaction time. The report assigns each daily transaction file to its filename date, so an update-time batch can contain transactions that took place earlier.
+The upstream CRM card export is filtered by application time, and the top-up export by creation time. The Passto, Reap, and PhotonPay daily exports use update time, while StraitsX uses transaction time. The report assigns each daily transaction file to its filename date, so an update-time batch can contain transactions that took place earlier. When the PhotonPay daily file is missing, the report also looks under `消费数据/历史补充/` for an export named `光子易_YYYY-MM-DD.xlsx` or `PhotonPay_YYYY-MM-DD.xlsx` for that date.
 
 History mode also searches for month-dated card files under `开卡/`, month-dated top-ups under `充值数据/Q*/`, and channel-named ledgers under `消费数据/UPB/Q*/<month>/`. For transaction archive filenames without a year, set `--archive-year`, which defaults to the current UTC year. When several archive files match a dataset and month, the most recently modified one takes precedence.
 
@@ -112,7 +120,7 @@ These setup commands are for macOS and Linux. On Windows, use `py -3 -m venv .ve
 .venv/bin/python refresh.py --date 2026-05-12 --source "/path/to/upb-exports" --cards-export "/path/to/card-completions.xlsx"
 ```
 
-Use `--output` to change the default `UPB每日数据汇总.xlsx` in the project directory. A single-date run also supports `--reap-export`, `--passto-export`, and `--straitsx-export`. The workbook records supplemental file paths and reuses those files for the same date while they are available.
+Use `--output` to change the default `UPB每日数据汇总.xlsx` in the project directory. A single-date run also supports `--reap-export`, `--passto-export`, `--straitsx-export`, and `--photonpay-export`. The workbook records supplemental file paths and reuses those files for the same date while they are available.
 
 On macOS, put the exports in the project's `data/` directory or link it to your existing export folder with `ln -s "/path/to/upb-exports" data`. Run `chmod +x *.command` during setup, then double-click `双击更新UPB日报.command` (daily update) or `双击重算UPB历史.command` (historical recalculation) in Finder. The launchers prefer the project's `.venv/bin/python` and open the workbook on success. Use the terminal for custom input or output paths. Save and close the workbook before refreshing it.
 
@@ -132,5 +140,11 @@ On macOS, put the exports in the project's `data/` directory or link it to your 
 | Spending (USD) | Include debit rows. CRM daily, monthly and legacy files are limited to primary orders. Explicit original-report supplements retain their export scope. Reap uses the USD transaction amount. StraitsX uses the original transaction amount, or the transaction amount in the legacy schema, in USD. Passto converts its HKD transaction amount by dividing by the fixed **7.78** rate. Deduplicate by date and transaction ID. For conflicting versions in monthly archives, use the latest update when timestamps distinguish them. Monthly files are assigned by transaction date. |
 | 2B / 2C | After trimming whitespace and ignoring case, an agent value equal to `UPay` is 2C. All other values are 2B. Top-ups use the assigned agent and transactions prefer the historical agent field for that channel. Each channel's 2B spending equals its total minus 2C spending. |
 | Totals and shares | Round monetary subtotals to two decimals. Shares divide the segment or channel by its corresponding daily total. A zero denominator or missing required input yields a blank. |
+
+#### PhotonPay 2B / 2C
+
+- **Top-ups (USDT).** Card channel values of `photonpay` (case-insensitive) or `光子易` map to PhotonPay. Keep successful top-up or collateral orders paid in USDT and deduplicate by date and order number. Split records by assigned agent (`所属代理商`) and sum the paid amount for each segment. If a legacy sheet lacks that column, use historical agent (`历史代理商`).
+- **Spending (USD).** Keep primary orders with debit flow. Sum the USD transaction amount (`交易金额`) and deduplicate by date and transaction ID, including exports that label the ID `主ID`. Use historical assigned agent (`历史所属代理商`), falling back to `历史代理商名称` and then `所属代理商` when the preceding column is absent. PhotonPay 2C is the sum of UPay transactions. PhotonPay 2B is the channel total minus 2C.
+- **Totals and missing files.** PhotonPay contributes to both daily totals. Spending totals use the original three channels for dates before the first available PhotonPay export. From that date onward, a missing PhotonPay file flags the date for review and leaves spending totals and shares blank. A present file with no qualifying debits contributes zero.
 
 Yellow source labels identify export scopes that warrant review. Missing exports, unsupported currencies, and unresolved duplicate conflicts leave the corresponding values blank and are recorded in the workbook. Export files, generated workbooks, and machine-specific configuration stay local.
