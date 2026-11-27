@@ -8,7 +8,9 @@ from xlsxwriter.utility import xl_rowcol_to_cell
 PHOTON = "PhotonPay"
 BASE_CHANNELS = ("Reap", "Passto", "StraitsX")
 CHANNELS = (*BASE_CHANNELS, PHOTON)
-RECHARGE_CHANNELS = (*CHANNELS, "其他渠道")
+OE = "OE"
+OTHER_RECHARGE = "其他渠道"
+RECHARGE_CHANNELS = (*CHANNELS, OE, OTHER_RECHARGE)
 FX = Decimal("7.78")
 NAVY = "#12323B"
 TEAL = "#08786C"
@@ -40,7 +42,7 @@ SOURCE_NOTES = (
     "交易按支出汇总，日报补充导出沿用其原有范围。CRM 日档和归档仅统计主订单。Passto 采用 7.78 HKD/USD。",
     "光子易和 PhotonPay 统一记为 PhotonPay，消费按 USD 交易金额统计。已覆盖期间缺源表时消费汇总留空。",
     "历史计算优先用补充导出、CRM 日档、月档，旧版日档补月档漏缺。月档充值按创建日、交易按交易日归集。",
-    "历史开卡和充值中的 OE 等渠道归入其他渠道。月档中同一交易 ID 有多次更新时使用较新的记录。",
+    "OE 充值单列，其他充值渠道有金额时另行显示。月档中同一交易 ID 有多次更新时使用较新的记录。",
     "缺少源表或相关日期的明细时对应金额或张数留空。黄色来源标记表示导出范围待核对。",
 )
 
@@ -147,8 +149,16 @@ def write_summary(workbook, records):
     status_style = {"font_name": "Arial", "font_size": 10, "font_color": NAVY, "valign": "vcenter"}
     status = workbook.add_format(status_style)
     attention = workbook.add_format({**status_style, "bg_color": AMBER})
+    other_index = RECHARGE_CHANNELS.index(OTHER_RECHARGE)
+    show_other = any(
+        record["recharge"][i] not in (None, 0)
+        for record in records for i in (other_index, len(RECHARGE_CHANNELS) + other_index)
+    )
+    fallback_rows = {start + other_index for start in (14, RECHARGE_2C, RECHARGE_2B, RECHARGE_SHARE)}
     for row, label in enumerate(LABELS, 1):
-        sheet.set_row(row - 1, 35 if row == 1 else 24 if row in (6, 13, ROW["交易明细（USD）"], ROW["资金明细（USD）"]) else 21)
+        height = 35 if row == 1 else 24 if row in (6, 13, ROW["交易明细（USD）"], ROW["资金明细（USD）"]) else 21
+        options = {"hidden": True} if not show_other and row in fallback_rows else None
+        sheet.set_row(row - 1, height, options=options)
         sheet.write_string(row - 1, 0, label, title if row == 1 else formats[row])
 
     for column, record in enumerate(records, 1):

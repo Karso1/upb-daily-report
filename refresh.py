@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from xlsxwriter.exceptions import FileCreateError
 
 from report_workbook import (
-    BASE_CHANNELS, CHANNELS, FX, LABELS, PHOTON, RECHARGE_2C, RECHARGE_2B, RECHARGE_CHANNELS,
+    BASE_CHANNELS, CHANNELS, FX, LABELS, OE, OTHER_RECHARGE, PHOTON, RECHARGE_2C, RECHARGE_2B, RECHARGE_CHANNELS,
     SOURCE_HEADERS, TX_START, TX_2C, write_report,
 )
 
@@ -85,8 +85,10 @@ def recharge(path, days, monthly):
             raise ValueError(f"{path.name} 有成功充值的币种、渠道或订单号待核对")
         if channel.casefold() in PHOTON_ALIASES:
             channel = PHOTON
-        if channel not in CHANNELS:
-            channel = "其他渠道"
+        elif channel.casefold() == OE.casefold():
+            channel = OE
+        if channel not in RECHARGE_CHANNELS:
+            channel = OTHER_RECHARGE
         item = (channel, is_consumer(agent), Decimal(value))
         keep_unique(orders, (day, order), item, path, "充值")
     totals = defaultdict(Decimal)
@@ -192,8 +194,13 @@ def aggregate(task):
 
 
 def load_report(path):
+    records, _ = read_report(path)
+    return records
+
+
+def read_report(path):
     if not path.exists():
-        return {}
+        return {}, False
     book = load_workbook(path, read_only=True, data_only=True)
     try:
         sheet = book["UPB每日汇总"]
@@ -201,7 +208,9 @@ def load_report(path):
         photon_layout = sources["G2"].value == PHOTON
         old_layout = sheet["A34"].value == "交易汇总"
         prior_layout = sheet["A11"].value == "其他渠道开卡"
-        last_row = len(LABELS) if photon_layout else 53 if prior_layout else 35 if old_layout else 48
+        oe_layout = photon_layout and sheet["A19"].value == OTHER_RECHARGE
+        renamed_oe = photon_layout and sheet["A18"].value == OE
+        last_row = len(LABELS) if oe_layout else 60 if photon_layout else 53 if prior_layout else 35 if old_layout else 48
         columns = list(zip(*sheet.iter_rows(min_row=2, max_row=last_row, values_only=True)))
         if not columns or columns[0][1] != "平台注册人数":
             raise ValueError("现有 Excel 的平台注册人数行已移动")
@@ -221,23 +230,28 @@ def load_report(path):
             card_values = list(column[5:10] if prior_layout else column[5:9])
             if not prior_layout:
                 card_values.append(0 if all(value is not None for value in card_values) else None)
-            if photon_layout:
+            if oe_layout:
                 size = len(RECHARGE_CHANNELS)
                 recharge_values = list(column[RECHARGE_2C - 2:RECHARGE_2B - 2 + size])
                 transactions = [[column[TX_START - 2 + i], column[TX_2C - 2 + i]] for i in range(len(CHANNELS))]
             else:
-                start, width = (16, 4) if prior_layout else (14, 3)
+                start, width = (17, 5) if photon_layout else (16, 4) if prior_layout else (14, 3)
                 recharge_values = []
                 for group in range(2):
                     part = list(column[start + group * width:start + (group + 1) * width])
                     missing_value = 0 if all(value is not None for value in part) else None
                     if not prior_layout:
                         part.append(missing_value)
-                    part.insert(len(BASE_CHANNELS), missing_value)
+                    if not photon_layout:
+                        part.insert(len(BASE_CHANNELS), missing_value)
+                    # Preserve unlabeled history until it can be reclassified from the source exports.
+                    part.insert(len(part) if renamed_oe else len(CHANNELS), missing_value)
                     recharge_values.extend(part)
-                tx_start = 34 if prior_layout else 29
-                transactions = [[column[i], None if old_layout else column[i + 3]] for i in range(tx_start, tx_start + len(BASE_CHANNELS))]
-                transactions.append([None, None])
+                tx_start = 38 if photon_layout else 34 if prior_layout else 29
+                channels = CHANNELS if photon_layout else BASE_CHANNELS
+                transactions = [[column[i], None if old_layout else column[i + len(channels)]] for i in range(tx_start, tx_start + len(channels))]
+                if not photon_layout:
+                    transactions.append([None, None])
             records[day] = {
                 "day": day, "registration": registration, "card_status": column[2], "tx_status": column[3],
                 "cards": card_values, "recharge": recharge_values,
@@ -247,7 +261,7 @@ def load_report(path):
                 "paths": dict(zip(DATASETS, paths)), "supplemental": flags.split(",") if flags else [],
                 "issues": issues or "",
             }
-        return records
+        return records, not oe_layout
     finally:
         book.close()
 
@@ -485,7 +499,7 @@ def update(args, overrides):
     if args.output.with_name(f"~${args.output.name}").exists():
         raise ValueError("请先保存并关闭汇总 Excel，再运行更新")
     last_edit = args.output.stat().st_mtime_ns if args.output.exists() else None
-    records = load_report(args.output)
+    records, upgrade_layout = read_report(args.output)
     root = args.source.resolve()
     daily = daily_files(root)
     archive = archive_months(root, args.archive_year) if args.history or args.date else {}
@@ -537,7 +551,7 @@ def update(args, overrides):
             records[day] = record
             changed.append(day)
 
-    if not changed:
+    if not changed and (not upgrade_layout or not records):
         print("当前汇总数据一致。" if records else "此范围内没有 UPB 源表。")
         return
     with TemporaryDirectory(prefix=".upb-", dir=args.output.parent) as temp:
@@ -547,7 +561,10 @@ def update(args, overrides):
         if last_edit != current_edit or args.output.with_name(f"~${args.output.name}").exists():
             raise ValueError("汇总 Excel 在更新期间被打开或修改，请保存并关闭后重试")
         candidate.replace(args.output)
-    print(f"已更新 {len(changed)} 天（{changed[0]} 至 {changed[-1]}）。")
+    if changed:
+        print(f"已更新 {len(changed)} 天（{changed[0]} 至 {changed[-1]}）。")
+    else:
+        print("已更新汇总布局，保留已有日期的数据。")
 
 
 if __name__ == "__main__":

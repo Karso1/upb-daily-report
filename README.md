@@ -66,7 +66,7 @@ macOS 安装好依赖后，把导出目录放在项目的 `data/`，也可以在
 | 指标 | 规则 |
 | --- | --- |
 | 开卡 | 只计实付开卡费大于 0，且状态为「开卡成功」「制卡中」或「待激活」的记录。优先按开卡成功时间归日，月档该字段为空时用申请日。按日期、渠道和卡种用卡 ID 去重，缺卡 ID 时用订单号。单份日档若按申请时间导出，可能漏掉早前申请、当天才完成的卡。 |
-| 充值（USDT） | 只计状态为「充值/抵押成功」的订单，累加 `实付金额`，要求实付币种为 USDT，按日期和订单号去重。月档按创建时间归日，日档按文件名日期归日。通过 `卡片渠道` 分组，其他渠道计入「其他渠道」。 |
+| 充值（USDT） | 只计状态为「充值/抵押成功」的订单，累加 `实付金额`，要求实付币种为 USDT，按日期和订单号去重。月档按创建时间归日，日档按文件名日期归日。通过 `卡片渠道` 分组，OE 单列。未单列的渠道有充值金额时显示在「其他渠道」。 |
 | 消费（USD） | 只计「支出」。CRM 日档、月档及旧版日档限「主订单」，逐日指定的原日报补充文件沿用其筛选范围。Reap 读 `交易金额`（USD），StraitsX 优先读 `交易原始金额`（旧版用 `交易金额`，USD），Passto 读 HKD `交易金额` 后除以固定的 `7.78`。按日期和交易 ID 去重，月档同一 ID 有金额或归属变动且更新时间可区分时取较新的记录。月档按交易时间归日。 |
 | 2B／2C | 代理商字段去掉前后空白并忽略大小写后，等于 `UPay` 的归 2C，其余归 2B。充值读取所属代理商，交易优先读取渠道的历史代理商字段。交易的 2B 金额为渠道合计减渠道 2C。 |
 | 合计和占比 | 金额按分组小计四舍五入至两位小数。占比为分组或渠道金额除以同日对应总额。分母为零或有必要输入缺失时，留空。 |
@@ -76,6 +76,12 @@ macOS 安装好依赖后，把导出目录放在项目的 `data/`，也可以在
 - **充值（USDT）**。充值表的「卡片渠道」为 `photonpay`（忽略大小写）或「光子易」时，统一归入 PhotonPay。只计「充值/抵押成功」且实付币种为 USDT 的订单，按订单号和日期去重。根据「所属代理商」拆分后，分别累加 2B、2C 的「实付金额」。旧表缺该列时使用「历史代理商」。
 - **消费（USD）**。光子易或 PhotonPay 交易表只计「主订单」中的「支出」，读取 USD「交易金额」，按日期和交易 ID 去重，支持导出列「主ID」。优先用「历史所属代理商」区分客群，缺该列时依次使用「历史代理商名称」和「所属代理商」。PhotonPay 2C 为 UPay 记录的金额合计，PhotonPay 2B 为渠道合计减去 2C。
 - **合计与缺档**。PhotonPay 充值和消费均计入日报对应合计。首次有 PhotonPay 源表的日期之前，消费合计沿用原三渠道。从该日期开始，缺少 PhotonPay 源表会标记待核对，消费合计和占比留空。已有源表但无符合条件的支出时，PhotonPay 消费计为零。
+
+#### OE 充值
+
+「卡片渠道」为 `OE` 的成功 USDT 充值单列，识别时去掉前后空白并忽略大小写。OE 2C 累计所属代理商为 `UPay` 的实付金额，OE 2B 累计其余代理商的实付金额。OE 充值占比等于 OE 充值合计除以同日全部渠道的充值汇总。
+
+旧工作簿里的「其他渠道」可能包含多个渠道。升级时保留原分组金额和手填值。用历史重算读取原始导出后，确认属于 OE 的订单会计入 OE，其余继续计入「其他渠道」。
 
 汇总页标黄的来源状态表示导出范围待核对。缺档、币种异常或无法消解的重复记录会留下待核对说明，受影响的数字留空。工作簿、原始明细和本地配置属于使用环境中的数据，保存在本地。
 
@@ -136,7 +142,7 @@ On macOS, put the exports in the project's `data/` directory or link it to your 
 | Metric | Rule |
 | --- | --- |
 | Card openings | Count records with a positive paid opening fee and a status of successful, in production or pending activation. Assign by completion date. For monthly archives with missing completion timestamps, use the application date. Deduplicate within date, channel and card type by card ID, falling back to order number. Daily application-time exports may omit cards requested earlier and completed on the report date. |
-| Top-ups (USDT) | Sum the paid amount for successful top-up / collateral orders with USDT as the paid currency. Deduplicate by date and order number. Use the creation date for monthly archives and filename date for daily exports. Group by card channel, with remaining channels in Other. |
+| Top-ups (USDT) | Sum the paid amount for successful top-up / collateral orders with USDT as the paid currency. Deduplicate by date and order number. Use the creation date for monthly archives and filename date for daily exports. Group by card channel. OE is listed separately. Channels without a dedicated row appear in Other when they have top-up amounts. |
 | Spending (USD) | Include debit rows. CRM daily, monthly and legacy files are limited to primary orders. Explicit original-report supplements retain their export scope. Reap uses the USD transaction amount. StraitsX uses the original transaction amount, or the transaction amount in the legacy schema, in USD. Passto converts its HKD transaction amount by dividing by the fixed **7.78** rate. Deduplicate by date and transaction ID. For conflicting versions in monthly archives, use the latest update when timestamps distinguish them. Monthly files are assigned by transaction date. |
 | 2B / 2C | After trimming whitespace and ignoring case, an agent value equal to `UPay` is 2C. All other values are 2B. Top-ups use the assigned agent and transactions prefer the historical agent field for that channel. Each channel's 2B spending equals its total minus 2C spending. |
 | Totals and shares | Round monetary subtotals to two decimals. Shares divide the segment or channel by its corresponding daily total. A zero denominator or missing required input yields a blank. |
@@ -146,5 +152,11 @@ On macOS, put the exports in the project's `data/` directory or link it to your 
 - **Top-ups (USDT).** Card channel values of `photonpay` (case-insensitive) or `光子易` map to PhotonPay. Keep successful top-up or collateral orders paid in USDT and deduplicate by date and order number. Split records by assigned agent (`所属代理商`) and sum the paid amount for each segment. If a legacy sheet lacks that column, use historical agent (`历史代理商`).
 - **Spending (USD).** Keep primary orders with debit flow. Sum the USD transaction amount (`交易金额`) and deduplicate by date and transaction ID, including exports that label the ID `主ID`. Use historical assigned agent (`历史所属代理商`), falling back to `历史代理商名称` and then `所属代理商` when the preceding column is absent. PhotonPay 2C is the sum of UPay transactions. PhotonPay 2B is the channel total minus 2C.
 - **Totals and missing files.** PhotonPay contributes to both daily totals. Spending totals use the original three channels for dates before the first available PhotonPay export. From that date onward, a missing PhotonPay file flags the date for review and leaves spending totals and shares blank. A present file with no qualifying debits contributes zero.
+
+#### OE top-ups
+
+Successful USDT top-ups with a card channel of `OE` have their own row. The channel name is trimmed and matched case-insensitively. OE 2C sums the paid amounts assigned to `UPay`, and OE 2B sums the paid amounts assigned to all other agents. OE's share is its top-up total divided by the daily total across all channels.
+
+Older workbooks may have several channels grouped under Other. An upgrade preserves that amount and the manual inputs. When history is recalculated from the original exports, orders identified as OE move to OE and the remaining orders stay in Other.
 
 Yellow source labels identify export scopes that warrant review. Missing exports, unsupported currencies, and unresolved duplicate conflicts leave the corresponding values blank and are recorded in the workbook. Export files, generated workbooks, and machine-specific configuration stay local.
